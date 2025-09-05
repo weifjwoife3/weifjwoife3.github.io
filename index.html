@@ -124,10 +124,6 @@
   const timeEl=document.getElementById('time');
   const startBtn=document.getElementById('startBtn');
   const hardBtn=document.getElementById('hardBtn');
-  const calibBtn=document.getElementById('calibBtn');
-  const copyBtn=document.getElementById('copyBtn');
-  const resetBtn=document.getElementById('resetBtn');
-  const tintBtn=document.getElementById('tintBtn');
   const coordText=document.getElementById('coordText');
 
   let coords=loadCoords();
@@ -289,10 +285,6 @@
   /* 事件 */
   startBtn.addEventListener('click',()=>{totalMs=15000;minUp=500;maxUp=1100;setCalibrating(false);startGame();});
   hardBtn .addEventListener('click',()=>{totalMs=20000;minUp=320;maxUp=820; setCalibrating(false);startGame();});
-  calibBtn.addEventListener('click',()=>setCalibrating(!calibrating));
-  copyBtn .addEventListener('click',()=>{navigator.clipboard.writeText(JSON.stringify(coords,null,2)); alert('座標已複製');});
-  resetBtn.addEventListener('click',()=>{coords=JSON.parse(JSON.stringify(defaults)); saveCoords(); buildAll(stage.clientWidth,stage.clientHeight); refreshCoordText();});
-  tintBtn .addEventListener('click',()=>stage.classList.toggle('tint'));
 
   /* 初始化 */
   setStageSizeFromImage(BG_SRC).then(({w,h})=>{
