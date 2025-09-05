@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>打地鼠 — 公車座椅版（上層蓋板 + 校準）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root{
+    --mole-size: 200px;  /* 角色大小 */
+    --mask-w: 240px;     /* 蓋板寬 */
+    --mask-h: 60px;     /* 蓋板高：與角色同高，確保完全覆蓋 */
+    --pop-height: 10px;  /* 露出高度（頭冒出幾 px） */
+  }
+  html,body{margin:0;background:#121212;color:#fff;font-family:system-ui,Arial,sans-serif}
+  .wrap{max-width:1600px;margin:18px auto;padding:0 12px;text-align:center}
+  h1{margin:4px 0 10px;font-size:24px}
+  .hud{display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+  .stat{background:#232323;border-radius:10px;padding:.45rem .8rem}
+  .btn{background:#ffcc00;color:#222;border:0;border-radius:10px;padding:8px 14px;font-weight:700;cursor:pointer}
+  .btn:active{transform:translateY(1px)}
+
+  /* 舞台：大小=背景原始像素，避免縮放後座標跑位 */
+  .stage{
+    position:relative;
+    margin:0 auto;
+    overflow:hidden;
+    background:#000 center/100% 100% no-repeat;
+    border-radius:14px;
+    box-shadow:0 12px 40px rgba(0,0,0,.55);
+    user-select:none;
+  }
+
+  /* 兩層：地鼠層、蓋板層（蓋板永遠在上） */
+  #holes, #overlays{
+    position:absolute; inset:0;
+  }
+  #holes{ z-index:10; }
+  #overlays{ z-index:20; pointer-events:none; }
+
+  /* 每個地鼠洞 */
+  .hole{
+    position:absolute;
+    width:var(--mole-size);
+    height:var(--mole-size);
+    #overflow:visible;
+    cursor:pointer;
+    overflow: hidden;
+  }
+  .mole{
+    position:absolute; left:50%; bottom:calc(-1 * var(--mole-size));
+    width:var(--mole-size); transform:translateX(-50%);
+    transition:bottom .22s ease-out;
+    filter:drop-shadow(0 12px 10px rgba(0,0,0,.45));
+    -webkit-user-drag:none; user-select:none;
+    z-index:1; /* 角色位於地鼠層內的下層 */
+  }
+  .mole.up{ bottom:var(--pop-height); }
+
+  /* 座椅蓋板（在 overlays 層） */
+  .mask{
+    position:absolute;
+    width:var(--mask-w);
+    height:var(--mask-h);
+    background-image:url('bg_bus.png');  /* 與舞台同圖 */
+    background-repeat:no-repeat;
+    /* background-size 會以 JS 設成舞台像素尺寸 */
+    z-index:1;  /* 在 overlays 層中即可；整體已在上層 */
+    border-radius:18px; /* 視覺更柔和，可按需去除 */
+  }
+
+  /* 校準模式可視邊框 */
+  .calibrating #holes .hole{ outline:2px dashed rgba(255,255,255,.6); border-radius:10px }
+  .calibrating #holes .mole{ opacity:.3 }
+
+  /* 測試模式：蓋板著色便於肉眼確認（平時關閉） */
+  .tint #overlays .mask{ background-color:rgba(0,160,255,.35); mix-blend-mode:normal; }
+
+  .coords{
+    max-width:900px;margin:8px auto 0;text-align:left;
+    background:#0e0e0e;border:1px solid #2a2a2a;border-radius:10px;
+    padding:8px 10px;font-family:ui-monospace,Consolas,monospace
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>打地鼠：公車座椅後面冒頭（上層蓋板）</h1>
+  <div class="hud">
+    <div class="stat" id="score">分數：0</div>
+    <div class="stat" id="time">剩餘：15.0s</div>
+    <button class="btn" id="startBtn">開始</button>
+    <button class="btn" id="hardBtn">困難</button>
+    <button class="btn" id="calibBtn">🛠 座標校準</button>
+    <button class="btn" id="copyBtn">複製座標</button>
+    <button class="btn" id="resetBtn">還原預設</button>
+    <button class="btn" id="tintBtn">遮罩測試</button>
+  </div>
+
+  <div id="stage" class="stage">
+    <div id="holes"></div>
+    <div id="overlays"></div>
+  </div>
+
+  <details class="coords"><summary>目前洞座標</summary>
+    <pre id="coordText"></pre>
+  </details>
+</div>
+
+<script>
+(() => {
+  const BG_SRC='bg_bus.png', MOLE_SRC='mole.png';
+  const LS_KEY='bus_mole_coords_v3';
+
+  /* 你提供的 6 組座標 */
+  const defaults=[
+    {"id":"r2l","top":347,"left":198},
+    {"id":"r2r","top":285,"left":898},
+    {"id":"r3l","top":257,"left":595},
+    {"id":"r3r","top":349,"left":1164}
+    //{"id":"r4l","top":330,"left":200},
+    //{"id":"r4r","top":369,"left":1018}
+  ];
+
+  const stage=document.getElementById('stage');
+  const holesLayer=document.getElementById('holes');
+  const overlaysLayer=document.getElementById('overlays');
+  const scoreEl=document.getElementById('score');
+  const timeEl=document.getElementById('time');
+  const startBtn=document.getElementById('startBtn');
+  const hardBtn=document.getElementById('hardBtn');
+  const calibBtn=document.getElementById('calibBtn');
+  const copyBtn=document.getElementById('copyBtn');
+  const resetBtn=document.getElementById('resetBtn');
+  const tintBtn=document.getElementById('tintBtn');
+  const coordText=document.getElementById('coordText');
+
+  let coords=loadCoords();
+  function loadCoords(){
+    try{
+      const saved=JSON.parse(localStorage.getItem(LS_KEY));
+      if(saved&&Array.isArray(saved)&&saved.length===defaults.length) return saved;
+    }catch{}
+    return JSON.parse(JSON.stringify(defaults));
+  }
+  function saveCoords(){ localStorage.setItem(LS_KEY, JSON.stringify(coords)); }
+  function refreshCoordText(){ coordText.textContent=JSON.stringify(coords,null,2); }
+
+  /* 舞台尺寸 = 背景原圖像素 */
+  function setStageSizeFromImage(src){
+    return new Promise((resolve,reject)=>{
+      const img=new Image();
+      img.onload=()=>{
+        const w=img.naturalWidth, h=img.naturalHeight;
+        stage.style.width=w+'px';
+        stage.style.height=h+'px';
+        stage.style.backgroundImage=`url("${BG_SRC}")`;
+        resolve({w,h});
+      };
+      img.onerror=reject;
+      img.src=src;
+    });
+  }
+
+  /* 依座標建立洞（地鼠）與對應蓋板（overlays） */
+  function buildAll(bgW,bgH){
+    holesLayer.innerHTML=''; overlaysLayer.innerHTML='';
+    const moleSize = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--mole-size'));
+    const maskW    = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--mask-w'));
+    const maskH    = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--mask-h'));
+
+    coords.forEach(c=>{
+      // 地鼠
+      const hole=document.createElement('div');
+      hole.className='hole'; hole.id=c.id;
+      hole.style.top=c.top+'px';
+      hole.style.left=c.left+'px';
+
+      const mole=document.createElement('img');
+      mole.className='mole'; mole.src=MOLE_SRC; mole.alt='';
+
+      hole.appendChild(mole);
+      holesLayer.appendChild(hole);
+
+      // 蓋板（單獨在 overlays 層，z-index 更高）
+      const mask=document.createElement('div');
+      mask.className='mask';
+      mask.dataset.for=c.id; // 追蹤關聯
+      // 背景大小與舞台一致（像素對齊）
+      mask.style.backgroundSize = `${bgW}px ${bgH}px`;
+      // 計算蓋板的「舞台座標」
+      const absTop  = c.top + (moleSize - maskH);
+      const absLeft = c.left + (moleSize/2 - maskW/2);
+      // 置放位置
+      mask.style.top  = absTop+'px';
+      mask.style.left = absLeft+'px';
+      // 與舞台背景對齊的 background-position
+      mask.style.backgroundPosition = `-${absLeft}px -${absTop}px`;
+
+      overlaysLayer.appendChild(mask);
+    });
+  }
+
+  /* —— 遊戲 —— */
+  let lastHole=null,timeUp=true,score=0,totalMs=15000,minUp=500,maxUp=1100,rafId=null;
+  function rand(min,max){ return Math.round(Math.random()*(max-min)+min); }
+  function pickHole(){
+    const arr=[...holesLayer.querySelectorAll('.hole')];
+    let h; do{ h=arr[Math.floor(Math.random()*arr.length)]; } while(h===lastHole);
+    lastHole=h; return h;
+  }
+  function peep(){
+    const hole=pickHole();
+    const mole=hole.querySelector('.mole');
+    const upTime=rand(minUp,maxUp);
+    mole.classList.add('up');
+    const hide=()=>mole.classList.remove('up');
+    const t=setTimeout(()=>{ hide(); if(!timeUp) peep(); },upTime);
+    const onHit=()=>{
+      if(!mole.classList.contains('up')) return;
+      score++; scoreEl.textContent='分數：'+score;
+      mole.classList.remove('up'); clearTimeout(t);
+      mole.removeEventListener('click',onHit);
+      if(!timeUp) peep();
+    };
+    mole.addEventListener('click',onHit,{once:true});
+  }
+  function startGame(){
+    score=0; scoreEl.textContent='分數：0';
+    timeUp=false;
+    const start=performance.now();
+    if(rafId) cancelAnimationFrame(rafId);
+    const tick=(now)=>{
+      const left=Math.max(totalMs-(now-start),0);
+      timeEl.textContent='剩餘：'+(left/1000).toFixed(1)+'s';
+      if(left<=0){ timeUp=true; return; }
+      rafId=requestAnimationFrame(tick);
+    };
+    rafId=requestAnimationFrame(tick);
+    peep();
+  }
+
+  /* —— 座標校準（拖動洞; 蓋板同步） —— */
+  let calibrating=false;
+  function setCalibrating(on){
+    calibrating=on;
+    stage.classList.toggle('calibrating',on);
+    timeUp=true; // 停止遊戲
+    holesLayer.querySelectorAll('.mole').forEach(m=>m.classList.remove('up'));
+  }
+  function makeDraggable(){
+    let dragging=null,dx=0,dy=0;
+    stage.addEventListener('pointerdown',e=>{
+      if(!calibrating) return;
+      const hole=e.target.closest('.hole'); if(!hole) return;
+      dragging=hole; dragging.setPointerCapture(e.pointerId);
+      const rect=stage.getBoundingClientRect();
+      dx=e.clientX-rect.left-parseInt(hole.style.left,10);
+      dy=e.clientY-rect.top -parseInt(hole.style.top,10);
+    });
+    stage.addEventListener('pointermove',e=>{
+      if(!dragging||!calibrating) return;
+      const rect=stage.getBoundingClientRect();
+      let x=e.clientX-rect.left-dx, y=e.clientY-rect.top-dy;
+      const maxX=rect.width-parseFloat(getComputedStyle(dragging).width);
+      const maxY=rect.height-parseFloat(getComputedStyle(dragging).height);
+      x=Math.max(0,Math.min(x,maxX));
+      y=Math.max(0,Math.min(y,maxY));
+      dragging.style.left=Math.round(x)+'px';
+      dragging.style.top =Math.round(y)+'px';
+      // 同步更新對應蓋板位置 & 背景對齊
+      const id=dragging.id;
+      const mask=overlaysLayer.querySelector(`.mask[data-for="${id}"]`);
+      const moleSize = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--mole-size'));
+      const maskW    = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--mask-w'));
+      const maskH    = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--mask-h'));
+      const absTop  = Math.round(y + (moleSize - maskH));
+      const absLeft = Math.round(x + (moleSize/2 - maskW/2));
+      mask.style.top  = absTop+'px';
+      mask.style.left = absLeft+'px';
+      mask.style.backgroundPosition = `-${absLeft}px -${absTop}px`;
+    });
+    stage.addEventListener('pointerup',e=>{
+      if(!dragging) return;
+      const i=coords.findIndex(c=>c.id===dragging.id);
+      coords[i].left=parseInt(dragging.style.left,10);
+      coords[i].top =parseInt(dragging.style.top,10);
+      saveCoords(); refreshCoordText();
+      dragging.releasePointerCapture?.(e.pointerId);
+      dragging=null;
+    });
+  }
+
+  /* 事件 */
+  startBtn.addEventListener('click',()=>{totalMs=15000;minUp=500;maxUp=1100;setCalibrating(false);startGame();});
+  hardBtn .addEventListener('click',()=>{totalMs=20000;minUp=320;maxUp=820; setCalibrating(false);startGame();});
+  calibBtn.addEventListener('click',()=>setCalibrating(!calibrating));
+  copyBtn .addEventListener('click',()=>{navigator.clipboard.writeText(JSON.stringify(coords,null,2)); alert('座標已複製');});
+  resetBtn.addEventListener('click',()=>{coords=JSON.parse(JSON.stringify(defaults)); saveCoords(); buildAll(stage.clientWidth,stage.clientHeight); refreshCoordText();});
+  tintBtn .addEventListener('click',()=>stage.classList.toggle('tint'));
+
+  /* 初始化 */
+  setStageSizeFromImage(BG_SRC).then(({w,h})=>{
+    stage.style.backgroundImage=`url("${BG_SRC}")`;
+    buildAll(w,h);
+    makeDraggable();
+    refreshCoordText();
+  }).catch(()=>{
+    // 後備尺寸（你的圖常見是 1476x768）
+    const w=1476,h=768;
+    stage.style.width=w+'px'; stage.style.height=h+'px'; stage.style.backgroundImage=`url("${BG_SRC}")`;
+    buildAll(w,h); makeDraggable(); refreshCoordText();
+  });
+})();
+</script>
+</body>
+</html>
+
